@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 # Змінні середовища
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHANNEL_ID = "-1002823366291"  # Перевірте та оновіть цей ID для https://t.me/+QPGNI10IfqU5MGEy
-CHANNEL_LINK = "https://t.me/+QPGNI10IfqU5MGEy"  # Посилання на канал
+CHANNEL_ID = "-1002834216129"  # Перевірте та оновіть цей ID для https://t.me/+QPGNI10IfqU5MGEy
+CHANNEL_LINK = "https://t.me/+ZzEgiQVCP6s2Y2Ji"  # Посилання на канал
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Обробник команди /start
