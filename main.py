@@ -116,7 +116,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=create_region_keyboard()
                 )
             else:
-                keyboard = [[InlineKeyboardButton "Підписатися", url=CHANNEL_LINK)]]
+                keyboard = [[InlineKeyboardButton("Підписатися", url=CHANNEL_LINK)]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.message.reply_text(
                     "Ви не підписані на канал.\n\n"
@@ -167,15 +167,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logger.error(f"Помилка при обробці 'Інші регіони' для користувача {user_id}: {str(e)}")
-            await query.message.reply_text(
-                "Помилка при завантаженні регіонів. Спробуйте ще раз або зверніться до адміністратора."
-            )
-    
-    elif query.data == "main_cities":
-        try:
-            await query.edit_message_text(
-                "Дякуємо за підписку!\n\n"
-                "Тепер ви можете знаходити замовлення та створювати оголошення у вашому регіоні.\n\n"
+           ения у вашому регіоні.\n\n"
                 "Оберіть свій регіон:",
                 reply_markup=create_region_keyboard()
             )
