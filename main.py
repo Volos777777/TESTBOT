@@ -95,7 +95,7 @@ async def send_region_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
 # Фолов-ап після надання контакту: чек підписки через 10с, нагадування (якщо треба), потім меню регіонів
 async def post_contact_followup(context: ContextTypes.DEFAULT_TYPE, user_id: int, chat_id: int):
-    await asyncio.sleep(10)
+    await asyncio.sleep(60)
     subscribed = await is_user_subscribed(context, user_id)
     if not subscribed:
         try:

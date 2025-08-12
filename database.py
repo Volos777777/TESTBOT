@@ -42,6 +42,7 @@ def init_db():
                 username VARCHAR(255),
                 first_name VARCHAR(255),
                 last_name VARCHAR(255),
+                phone_number VARCHAR(32),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 updated_at TIMESTAMP WITH TIME ZONE,
                 is_subscribed BOOLEAN DEFAULT FALSE,
@@ -50,8 +51,34 @@ def init_db():
                 is_blocked BOOLEAN DEFAULT FALSE
             )
         """)
+        # На випадок, якщо таблиця створена раніше без phone_number
+        cur.execute("""
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS phone_number VARCHAR(32)
+        """)
+        
+        # Якщо раніше зберігали телефони у user_contacts — перенесемо їх у users
+        try:
+            cur.execute("SELECT to_regclass('public.user_contacts')")
+            exists = cur.fetchone()[0]
+            if exists:
+                cur.execute(
+                    """
+                    UPDATE users u
+                    SET phone_number = c.phone_number,
+                        first_name = COALESCE(u.first_name, c.first_name),
+                        last_name  = COALESCE(u.last_name,  c.last_name),
+                        updated_at = NOW()
+                    FROM user_contacts c
+                    WHERE u.user_id = c.user_id
+                      AND (u.phone_number IS NULL OR u.phone_number = '')
+                    """
+                )
+        except Exception as migrate_err:
+            logger.warning(f"Міграція телефонів із user_contacts пропущена: {migrate_err}")
+        
         conn.commit()
-        logger.info("База даних ініціалізована")
+        logger.info(f"База даних ініціалізована (db={DB_NAME}, host={DB_HOST})")
     except Exception as e:
         logger.error(f"Помилка ініціалізації бази даних: {e}")
     finally:
@@ -170,7 +197,7 @@ def update_blocked_status(user_id, is_blocked):
         if conn is not None:
             conn.close()
 
-# Збереження контакту користувача
+# Збереження контакту користувача (в таблиці users)
 def save_contact(user_id, phone_number, first_name=None, last_name=None):
     conn = None
     try:
@@ -182,35 +209,36 @@ def save_contact(user_id, phone_number, first_name=None, last_name=None):
             port=DB_PORT
         )
         cur = conn.cursor()
-        
-        # Спочатку перевіряємо чи існує таблиця contacts
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS user_contacts (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
-                phone_number VARCHAR(20) NOT NULL,
-                first_name VARCHAR(255),
-                last_name VARCHAR(255),
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                UNIQUE(user_id)
+        # Спочатку пробуємо оновити існуючого користувача
+        cur.execute(
+            """
+            UPDATE users
+            SET phone_number = %s,
+                first_name = COALESCE(%s, first_name),
+                last_name = COALESCE(%s, last_name),
+                updated_at = NOW()
+            WHERE user_id = %s
+            """,
+            (phone_number, first_name, last_name, user_id),
+        )
+        # Якщо рядків не оновлено — вставляємо нового користувача
+        if cur.rowcount == 0:
+            cur.execute(
+                """
+                INSERT INTO users (user_id, username, first_name, last_name, phone_number, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET phone_number = EXCLUDED.phone_number,
+                    first_name = COALESCE(EXCLUDED.first_name, users.first_name),
+                    last_name = COALESCE(EXCLUDED.last_name, users.last_name),
+                    updated_at = NOW()
+                """,
+                (user_id, None, first_name, last_name, phone_number),
             )
-        """)
-        
-        # Зберігаємо або оновлюємо контакт
-        cur.execute("""
-            INSERT INTO user_contacts (user_id, phone_number, first_name, last_name)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (user_id) DO UPDATE
-            SET phone_number = EXCLUDED.phone_number,
-                first_name = EXCLUDED.first_name,
-                last_name = EXCLUDED.last_name,
-                created_at = NOW()
-        """, (user_id, phone_number, first_name, last_name))
-        
         conn.commit()
-        logger.info(f"Контакт для користувача {user_id} збережений")
+        logger.info(f"Контакт (phone) для користувача {user_id} збережений у users")
     except Exception as e:
-        logger.error(f"Помилка збереження контакту для {user_id}: {e}")
+        logger.error(f"Помилка збереження телефону для {user_id}: {e}")
     finally:
         if conn is not None:
             conn.close()
