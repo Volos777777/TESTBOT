@@ -3,6 +3,7 @@ import logging
 import psycopg2
 from urllib.parse import urlparse  # Виправлений імпорт
 from telegram.error import TelegramError
+from psycopg2.extras import Json
 
 # Налаштування логування
 logger = logging.getLogger(__name__)
@@ -77,6 +78,23 @@ def init_db():
         except Exception as migrate_err:
             logger.warning(f"Міграція телефонів із user_contacts пропущена: {migrate_err}")
         
+        # Таблиця логів переписок
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS message_logs (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                direction VARCHAR(10) NOT NULL, -- 'in' або 'out'
+                message_type VARCHAR(50) NOT NULL,
+                content TEXT,
+                extra JSONB,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_message_logs_user_created
+            ON message_logs(user_id, created_at)
+        """)
+
         conn.commit()
         logger.info(f"База даних ініціалізована (db={DB_NAME}, host={DB_HOST})")
     except Exception as e:
@@ -239,6 +257,32 @@ def save_contact(user_id, phone_number, first_name=None, last_name=None):
         logger.info(f"Контакт (phone) для користувача {user_id} збережений у users")
     except Exception as e:
         logger.error(f"Помилка збереження телефону для {user_id}: {e}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+# Лог переписки
+def log_message(user_id: int, direction: str, message_type: str, content: str | None = None, extra: dict | None = None):
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            host=DB_HOST,
+            port=DB_PORT
+        )
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO message_logs (user_id, direction, message_type, content, extra)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (user_id, direction, message_type, content, Json(extra) if extra is not None else None),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Помилка запису логу для {user_id}: {e}")
     finally:
         if conn is not None:
             conn.close()

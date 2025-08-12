@@ -8,7 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from telegram.error import TelegramError, Conflict
 from broadcast import broadcast  # Імпорт broadcast з окремого файлу
-from database import init_db, load_users, save_user, update_subscription_status, update_blocked_status, save_contact  # Імпорт з database.py
+from database import init_db, load_users, save_user, update_subscription_status, update_blocked_status, save_contact, log_message  # Імпорт з database.py
 
 # Налаштування логування
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -30,6 +30,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name=user.last_name,
         language_code=user.language_code
     )
+    log_message(user.id, 'in', 'command', '/start', extra={'username': user.username})
     
     # Створюємо клавіатуру для запиту контактів
     keyboard = [[KeyboardButton("Поділитися контактом", request_contact=True)]]
@@ -39,6 +40,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Вітаємо {user.first_name}! Для продовження роботи потрібно поділитися вашим контактом.",
         reply_markup=reply_markup
     )
+    log_message(user.id, 'out', 'text', 'Запит контакту на старті')
 
 # Перевірка підписки користувача
 async def is_user_subscribed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
@@ -56,18 +58,25 @@ async def is_user_subscribed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -
 async def send_channel_invite_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     image_path = "images/bot_image.png"  # Замініть файлом, який ви надішлете
     caption = (
-        "Приєднуйтесь до нашого каналу, щоб отримувати замовлення та оновлення.\n"
-        f"{CHANNEL_LINK}"
+        "Приєднуйтесь до нашого каналу, щоб отримувати замовлення та оновлення."
     )
+    keyboard = [
+        [InlineKeyboardButton("Відкрити канал", url=CHANNEL_LINK)],
+        [InlineKeyboardButton("Я підписався", callback_data="subscribe")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     try:
         if os.path.exists(image_path) and os.path.getsize(image_path) > 1000:
             with open(image_path, "rb") as photo:
-                await context.bot.send_photo(chat_id=chat_id, photo=photo, caption=caption)
+                await context.bot.send_photo(chat_id=chat_id, photo=photo, caption=caption, reply_markup=reply_markup)
         else:
-            await context.bot.send_message(chat_id=chat_id, text=caption)
+            await context.bot.send_message(chat_id=chat_id, text=f"{caption}\n{CHANNEL_LINK}", reply_markup=reply_markup)
+        # Лог вихідного повідомлення
+        log_message(chat_id, 'out', 'invite', caption, extra={'with_buttons': True})
     except Exception as e:
         logger.error(f"Помилка відправки інвайту в канал: {e}")
-        await context.bot.send_message(chat_id=chat_id, text=caption)
+        await context.bot.send_message(chat_id=chat_id, text=f"{caption}\n{CHANNEL_LINK}", reply_markup=reply_markup)
+        log_message(chat_id, 'out', 'invite', caption, extra={'fallback': True, 'with_buttons': True})
 
 # Відправка меню регіональних каналів
 async def send_region_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
@@ -84,25 +93,27 @@ async def send_region_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         [InlineKeyboardButton("Інші регіони", callback_data="other_regions")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=(
-            "Тепер ви можете знаходити замовлення та створювати оголошення у вашому регіоні.\n\n"
-            "Оберіть свій регіон:"
-        ),
-        reply_markup=reply_markup,
+    text = (
+        "Тепер ви можете знаходити замовлення та створювати оголошення у вашому регіоні.\n\n"
+        "Оберіть свій регіон:"
     )
+    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+    log_message(chat_id, 'out', 'text', text)
 
-# Фолов-ап після надання контакту: чек підписки через 10с, нагадування (якщо треба), потім меню регіонів
+# Фолов-ап після надання контакту: чек підписки через 60с, нагадування (якщо треба), потім меню регіонів
 async def post_contact_followup(context: ContextTypes.DEFAULT_TYPE, user_id: int, chat_id: int):
     await asyncio.sleep(60)
     subscribed = await is_user_subscribed(context, user_id)
     if not subscribed:
         try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"Мабуть хтось заснув, будь-ласка підпишіться на телеграм канал\n{CHANNEL_LINK}",
-            )
+            text = "Мабуть хтось заснув, будь-ласка підпишіться на телеграм канал"
+            keyboard = [
+                [InlineKeyboardButton("Відкрити канал", url=CHANNEL_LINK)],
+                [InlineKeyboardButton("Я підписався", callback_data="subscribe")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+            log_message(user_id, 'out', 'reminder', text)
         except Exception as e:
             logger.error(f"Не вдалося надіслати нагадування: {e}")
     # Після цього надсилаємо меню регіонів незалежно від підписки
@@ -122,26 +133,30 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             first_name=contact.first_name,
             last_name=contact.last_name,
         )
+        log_message(user.id, 'in', 'contact', contact.phone_number, extra={'first_name': contact.first_name, 'last_name': contact.last_name})
         
         # Прибираємо клавіатуру
         await update.message.reply_text(
             "Дякуємо!",
             reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True),
         )
+        log_message(user.id, 'out', 'text', 'Підтвердження отримання контакту')
         
         # 1) Інвайт у канал з посиланням і (за наявності) зображенням
         await send_channel_invite_message(context, chat_id)
         
-        # 2) Через 10с: якщо не підписався — нагадаємо; далі відправимо меню регіонів
+        # 2) Через 60с: якщо не підписався — нагадаємо; далі відправимо меню регіонів
         asyncio.create_task(post_contact_followup(context, user.id, chat_id))
     else:
         await update.message.reply_text("Будь ласка, поділіться вашим контактом для продовження роботи.")
+        log_message(user.id, 'out', 'text', 'Запит повторити надсилання контакту')
 
 # Обробник колбека для кнопки підписки та регіонів
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    log_message(user_id, 'in', 'callback', query.data)
     
     if query.data == "subscribe":
         chat_id = CHANNEL_ID  # Використовуємо змінну CHANNEL_ID
@@ -153,79 +168,45 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Після підтвердження підписки показуємо меню регіонів
                 await send_region_menu(context, query.message.chat_id)
             else:
-                await query.message.reply_text(
+                text = (
                     "Ви не підписані на канал.\n\n"
                     "Будь ласка, підпишіться, щоб продовжити!\n\n"
                     f"Приєднуйтесь до нашого каналу: {CHANNEL_LINK}"
                 )
+                await query.message.reply_text(text)
+                log_message(user_id, 'out', 'text', text)
         except TelegramError as e:
             if "not enough rights" in str(e).lower() or "unauthorized" in str(e).lower():
                 logger.error(f"Бот не має прав для перевірки підписки в каналі {chat_id} для користувача {user_id}: {str(e)}")
                 await query.message.reply_text(
                     "Помилка: бот не має доступу до каналу. Зверніться до адміністратора."
                 )
+                log_message(user_id, 'out', 'text', 'Помилка доступу до каналу при перевірці підписки')
             else:
                 logger.error(f"Помилка при перевірці підписки для користувача {user_id}: {str(e)}")
                 await query.message.reply_text(
                     "Помилка перевірки підписки.\n\n"
                     "Спробуйте ще раз або зверніться до адміністратора."
                 )
+                log_message(user_id, 'out', 'text', 'Помилка перевірки підписки')
         except Exception as e:
             logger.error(f"Невідома помилка при перевірці підписки для користувача {user_id}: {str(e)}")
             await query.message.reply_text(
                 "Помилка перевірки підписки.\n\n"
                 "Спробуйте ще раз або зверніться до адміністратора."
             )
+            log_message(user_id, 'out', 'text', 'Невідома помилка перевірки підписки')
     
     elif query.data == "other_regions":
         try:
-            logger.info(f"Обробка кнопки 'Інші регіони' для користувача {user_id}")
-            region_urls = {
-                "Запоріжжя": "https://t.me/+XE-XiYnCSOwwYzAy",
-                "Вінниця": "https://t.me/+TsEar0CH3z0wYzQy",
-                "Полтава": "https://t.me/+cQcCFMOlQ6dkMWQy",
-                "Чернігів": "https://t.me/+KPOzzkb_B4RhNjU6",
-                "Черкаси": "https://t.me/+6d_cW6rKyrU0MDE6",
-                "Хмельницький": "https://t.me/+2ZktT_xJXd81NTJi",
-                "Житомир": "https://t.me/+-X78W7iXLkMzZTgy",
-                "Суми": "https://t.me/+f0P0ATKrmB5lYTli",
-                "Рівне": "https://t.me/+FaswQkcAfw5jNTli",
-                "Івано-Франківськ": "https://t.me/+hqOtVtNY41tkYjMy",
-                "Тернопіль": "https://t.me/+k2UwXPJrBg9mZjky",
-                "Ужгород": "https://t.me/+ZGu30lrloOM1ZWMy",
-                "Луцьк": "https://t.me/+wSOX_aMM9oJkZTdi",
-                "Чернівці": "https://t.me/+zU3actkWQlwwZjI6",
-                "Миколаїв": "https://t.me/+vyd6xO6jZ9o2NWI6",
-                "Херсон": "https://t.me/+pNd7r-LabUY5Yzky",
-                "Кропивницький": "https://t.me/+CAClUadjBbxhZDI6"
-            }
-            
-            keyboard = []
-            region_list = list(region_urls.items())
-            
-            # Розбиваємо на рядки по 2 кнопки для кращого відображення
-            for i in range(0, len(region_list), 2):
-                row = []
-                for j in range(2):
-                    if i + j < len(region_list):
-                        region_name, region_url = region_list[i + j]
-                        row.append(InlineKeyboardButton(region_name, url=region_url))
-                keyboard.append(row)
-            
-            # Додаємо кнопку "Назад"
-            keyboard.append([InlineKeyboardButton("« Назад до основних міст", callback_data="main_cities")])
-            
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                "Оберіть ваш регіон:",
-                reply_markup=reply_markup
-            )
+            await send_region_menu(context, query.message.chat_id)
         except Exception as e:
             logger.error(f"Помилка при обробці 'Інші регіони' для користувача {user_id}: {str(e)}")
             await query.message.reply_text(
                 f"Помилка при завантаженні регіонів: {str(e)}\n\n"
                 "Спробуйте ще раз або зверніться до адміністратора."
             )
+            log_message(user_id, 'out', 'text', 'Помилка при завантаженні регіонів')
     
     elif query.data == "main_cities":
         try:
@@ -235,6 +216,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(
                 "Помилка при завантаженні меню. Спробуйте ще раз або зверніться до адміністратора."
             )
+            log_message(user_id, 'out', 'text', 'Помилка при завантаженні меню регіонів')
 
 # Обробник команди /stats
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
