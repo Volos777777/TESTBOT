@@ -40,10 +40,79 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
+# Перевірка підписки користувача
+async def is_user_subscribed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    try:
+        member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except TelegramError as e:
+        logger.error(f"Не вдалося перевірити підписку для {user_id}: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Невідома помилка перевірки підписки для {user_id}: {e}")
+        return False
+
+# Відправка інвайту до каналу з посиланням і зображенням (якщо є)
+async def send_channel_invite_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    image_path = "images/bot_image.png"  # Замініть файлом, який ви надішлете
+    caption = (
+        "Приєднуйтесь до нашого каналу, щоб отримувати замовлення та оновлення.\n"
+        f"{CHANNEL_LINK}"
+    )
+    try:
+        if os.path.exists(image_path) and os.path.getsize(image_path) > 1000:
+            with open(image_path, "rb") as photo:
+                await context.bot.send_photo(chat_id=chat_id, photo=photo, caption=caption)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=caption)
+    except Exception as e:
+        logger.error(f"Помилка відправки інвайту в канал: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=caption)
+
+# Відправка меню регіональних каналів
+async def send_region_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    keyboard = [
+        [
+            InlineKeyboardButton("Київ", url="https://t.me/+MAtbwy9ufGAwMzli"),
+            InlineKeyboardButton("Дніпро", url="https://t.me/+YvX-FzQHpU1kNGZi"),
+            InlineKeyboardButton("Харків", url="https://t.me/+kanHOVAz99FlODYy"),
+        ],
+        [
+            InlineKeyboardButton("Одеса", url="https://t.me/+FyKju8C82b43OGEy"),
+            InlineKeyboardButton("Львів", url="https://t.me/+rbesn-FqWKkxMDFi"),
+        ],
+        [InlineKeyboardButton("Інші регіони", callback_data="other_regions")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "Тепер ви можете знаходити замовлення та створювати оголошення у вашому регіоні.\n\n"
+            "Оберіть свій регіон:"
+        ),
+        reply_markup=reply_markup,
+    )
+
+# Фолов-ап після надання контакту: чек підписки через 10с, нагадування (якщо треба), потім меню регіонів
+async def post_contact_followup(context: ContextTypes.DEFAULT_TYPE, user_id: int, chat_id: int):
+    await asyncio.sleep(10)
+    subscribed = await is_user_subscribed(context, user_id)
+    if not subscribed:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"Мабуть хтось заснув, будь-ласка підпишіться на телеграм канал\n{CHANNEL_LINK}",
+            )
+        except Exception as e:
+            logger.error(f"Не вдалося надіслати нагадування: {e}")
+    # Після цього надсилаємо меню регіонів незалежно від підписки
+    await send_region_menu(context, chat_id)
+
 # Обробник отримання контактів
 async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     contact = update.message.contact
+    chat_id = update.effective_chat.id
     
     if contact:
         # Зберігаємо контакт в базу даних
@@ -51,74 +120,22 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id=user.id,
             phone_number=contact.phone_number,
             first_name=contact.first_name,
-            last_name=contact.last_name
+            last_name=contact.last_name,
         )
         
-        # Видаляємо клавіатуру з контактами
+        # Прибираємо клавіатуру
         await update.message.reply_text(
-            "Дякуємо! Тепер ви можете продовжити роботу з ботом.",
-            reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True)
+            "Дякуємо!",
+            reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True),
         )
         
-        # Відправляємо основне повідомлення з зображенням
-        await send_main_message(update, context)
+        # 1) Інвайт у канал з посиланням і (за наявності) зображенням
+        await send_channel_invite_message(context, chat_id)
         
-        # Запускаємо таймер для повторної відправки
-        asyncio.create_task(schedule_reminder(update, context))
+        # 2) Через 10с: якщо не підписався — нагадаємо; далі відправимо меню регіонів
+        asyncio.create_task(post_contact_followup(context, user.id, chat_id))
     else:
         await update.message.reply_text("Будь ласка, поділіться вашим контактом для продовження роботи.")
-
-# Функція відправки основного повідомлення з зображенням
-async def send_main_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        # Перевіряємо чи існує файл зображення та чи це дійсно зображення
-        image_path = "images/bot_image.png"
-        if os.path.exists(image_path) and os.path.getsize(image_path) > 1000:  # Перевіряємо розмір файлу
-            # Відправляємо зображення
-            with open(image_path, "rb") as photo:
-                await update.message.reply_photo(
-                    photo=photo,
-                    caption="Вітаємо! Тут бренди шукають креаторів для співпраці."
-                )
-        else:
-            # Якщо зображення не знайдено або занадто мале, відправляємо тільки текст
-            raise FileNotFoundError("Зображення не знайдено або некоректне")
-        
-    except (FileNotFoundError, OSError, Exception) as e:
-        logger.info(f"Зображення недоступне, відправляю тільки текст: {e}")
-        # Fallback - відправляємо тільки текст
-        keyboard = [
-            [InlineKeyboardButton("Підписався (лась)", callback_data="subscribe")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            f"Вітаємо! Тут бренди шукають креаторів для співпраці.\nПідписуйтесь!\n{CHANNEL_LINK}",
-            reply_markup=reply_markup
-        )
-        return
-    
-    # Відправляємо текст з кнопкою після зображення
-    keyboard = [
-        [InlineKeyboardButton("Підписався (лась)", callback_data="subscribe")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        f"Підписуйтесь на наш канал!\n{CHANNEL_LINK}",
-        reply_markup=reply_markup
-    )
-
-# Функція для запланування повторної відправки
-async def schedule_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Чекаємо 10 секунд
-    await asyncio.sleep(10)
-    
-    try:
-        # Відправляємо напоминаюче повідомлення
-        await update.message.reply_text(
-            f"Мабуть хтось заснув, будь-ласка підпишіться на телеграм канал\n{CHANNEL_LINK}"
-        )
-    except Exception as e:
-        logger.error(f"Помилка відправки напоминаючого повідомлення: {e}")
 
 # Обробник колбека для кнопки підписки та регіонів
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -133,27 +150,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Статус користувача {user_id} у каналі {chat_id}: {member.status}")
             if member.status in ['member', 'administrator', 'creator']:
                 update_subscription_status(user_id, True)
-                keyboard = [
-                    [
-                        InlineKeyboardButton("Київ", url="https://t.me/+MAtbwy9ufGAwMzli"),
-                        InlineKeyboardButton("Дніпро", url="https://t.me/+YvX-FzQHpU1kNGZi"),
-                        InlineKeyboardButton("Харків", url="https://t.me/+kanHOVAz99FlODYy")
-                    ],
-                    [
-                        InlineKeyboardButton("Одеса", url="https://t.me/+FyKju8C82b43OGEy"),
-                        InlineKeyboardButton("Львів", url="https://t.me/+rbesn-FqWKkxMDFi")
-                    ],
-                    [
-                        InlineKeyboardButton("Інші регіони", callback_data="other_regions")
-                    ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.reply_text(
-                    "Дякуємо за підписку!\n\n"
-                    "Тепер ви можете знаходити замовлення та створювати оголошення у вашому регіоні.\n\n"
-                    "Оберіть свій регіон:",
-                    reply_markup=reply_markup
-                )
+                # Після підтвердження підписки показуємо меню регіонів
+                await send_region_menu(context, query.message.chat_id)
             else:
                 await query.message.reply_text(
                     "Ви не підписані на канал.\n\n"
@@ -231,27 +229,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "main_cities":
         try:
-            keyboard = [
-                [
-                    InlineKeyboardButton("Київ", url="https://t.me/+MAtbwy9ufGAwMzli"),
-                    InlineKeyboardButton("Дніпро", url="https://t.me/+YvX-FzQHpU1kNGZi"),
-                    InlineKeyboardButton("Харків", url="https://t.me/+kanHOVAz99FlODYy")
-                ],
-                [
-                    InlineKeyboardButton("Одеса", url="https://t.me/+FyKju8C82b43OGEy"),
-                    InlineKeyboardButton("Львів", url="https://t.me/+rbesn-FqWKkxMDFi")
-                ],
-                [
-                    InlineKeyboardButton("Інші регіони", callback_data="other_regions")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                "Дякуємо за підписку!\n\n"
-                "Тепер ви можете знаходити замовлення та створювати оголошення у вашому регіоні.\n\n"
-                "Оберіть свій регіон:",
-                reply_markup=reply_markup
-            )
+            await send_region_menu(context, query.message.chat_id)
         except Exception as e:
             logger.error(f"Помилка при поверненні до основних міст для користувача {user_id}: {str(e)}")
             await query.message.reply_text(
